@@ -12,7 +12,7 @@
 RootModule = 'EntraVacuum.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.2.0'
+ModuleVersion = '0.2.1'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -51,8 +51,7 @@ PowerShellVersion = '7.2'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-RequiredModules = @(@{ModuleName = 'Microsoft.Graph.Authentication'; ModuleVersion = '2.0.0'; }, 
-               @{ModuleName = 'Microsoft.Graph.Identity.Governance'; ModuleVersion = '2.0.0'; })
+RequiredModules = @(@{ModuleName = 'Microsoft.Graph.Authentication'; ModuleVersion = '2.0.0'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
