@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.1] - 2026-05-26
+
+### Fixed
+- Removed `Microsoft.Graph.Identity.Governance` from `RequiredModules` — the module was never called (all Graph access uses `Invoke-MgGraphRequest`), but its presence triggered `GetScriptCmdlets` scanning on import, causing `OutOfMemoryException` in memory-constrained environments
+
 ## [0.2.0] - 2026-05-06
 
 ### Added
