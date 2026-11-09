@@ -15,7 +15,7 @@ Install-Module -Name EntraVacuum -Scope CurrentUser
 
 - PowerShell 7.2+
 - Microsoft.Graph.Authentication 2.0.0+
-- Microsoft.Graph.Identity.Governance 2.0.0+
+- Drift checks call `evaluateDynamicMembership`, which needs the Groups Administrator (or Global/Intune Administrator) role, activated in PIM before connecting. Sync also needs the `EntitlementManagement.ReadWrite.All` scope.
 
 ## Usage
 
@@ -32,6 +32,11 @@ Sync-EntraVacAccessPackage -AccessPackageId "<package-id>"
 Sync-EntraVacAccessPackage -AccessPackageId "<package-id>" -WhatIf
 ```
 
+Safety options on `Sync-EntraVacAccessPackage`:
+
+- `-MaxRemovals` (default 100): refuses to send anything if more assignments than this would be removed. `-Force` overrides it.
+- `-IncludeGracePeriod`: also removes users already in their grace period. By default Entra removes them when the grace period ends.
+
 ## Assignment state handling
 
 `Sync-EntraVacAccessPackage` handles all active assignment states:
@@ -39,9 +44,10 @@ Sync-EntraVacAccessPackage -AccessPackageId "<package-id>" -WhatIf
 | State | User in target | Action |
 |---|---|---|
 | `Delivered` | Yes | Keep |
-| `Delivered` | No | adminRemove |
+| `Delivered` | No | adminRemove (skipped if already in the grace period) |
 | `PartiallyDelivered` | Yes | Reprocess ([ref](https://learn.microsoft.com/en-us/graph/api/accesspackageassignment-reprocess?view=graph-rest-1.0)) |
 | `PartiallyDelivered` | No | adminRemove |
+| `Delivering` | Any | Left alone (counted as assigned); listed in `Delivering`, and in `DeliveringNotInRule` if the user no longer matches |
 | No assignment | Yes | adminAdd |
 
 `Get-EntraVacAccessPackageDrift` surfaces these as `ShouldAdd`, `ShouldReprocess`, and `ShouldRemove`.
@@ -69,7 +75,10 @@ it to a Graph OData filter. The following Entra attribute syntax is supported:
 - Standard user properties: `user.department`, `user.jobTitle`, `user.country`, `user.companyName`, etc.
 - Extension attributes 1-15: `user.extensionAttribute1` through `user.extensionAttribute15`
   (mapped to [`onPremisesExtensionAttributes`](https://learn.microsoft.com/en-us/graph/api/resources/onpremisesextensionattributes?view=graph-rest-1.0))
-- Operators: `-eq`, `-ne`, `-and`, `-or`, parentheses for grouping
+- Operators: `-eq`, `-ne`, `-and`, `-or`, parentheses for grouping, and `-match`/`-notMatch` with a plain `"^prefix"`
+
+The translated filter is only a shortlist. Every user it disagrees with is confirmed with Entra's
+`evaluateDynamicMembership`, and an unsupported operator stops the run rather than guessing.
 
 Custom schema extensions (`extension_<guid>_*`) are not supported yet. If needed please open an issue.
 
@@ -87,6 +96,19 @@ Invoke-Pester ./Tests
 
 # Validate manifest before publishing
 Test-ModuleManifest -Path ./EntraVacuum/EntraVacuum.psd1
+```
+
+### Compare access packages (read-only)
+
+`tools/Compare-PackageMembership.ps1` explains why access packages with identical auto-assignment
+rules end up with different members. It compares the auto-assignment policies (rule, removal/grace
+settings, expiration) without paging every assignment, and can optionally show recent assignment
+requests and check specific users. It only reads - nothing is assigned or removed.
+
+```powershell
+Connect-MgGraph -Scopes EntitlementManagement.Read.All, User.Read.All, GroupMember.Read.All
+
+./tools/Compare-PackageMembership.ps1 -DisplayNameLike '*-region' -RecentDays 14 -UserPrincipalName user@contoso.com
 ```
 
 ## Versioning

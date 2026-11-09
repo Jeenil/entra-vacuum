@@ -22,4 +22,15 @@ Describe 'Convert-PolicyFilterToGraphFilter (private)' {
         $result = InModuleScope EntraVacuum { Convert-PolicyFilterToGraphFilter -PolicyFilter '' }
         $result | Should -BeNullOrEmpty
     }
+
+    It 'converts -match and -notMatch on a plain prefix to startsWith' {
+        $rule = '(user.accountEnabled -eq true) -and (user.userPrincipalName -notMatch "^admin_") -and (user.displayName -match "^AZ_")'
+        $result = InModuleScope EntraVacuum -Parameters @{ Rule = $rule } { Convert-PolicyFilterToGraphFilter -PolicyFilter $Rule }
+        $result | Should -Be "(accountEnabled eq true) and (not(startsWith(userPrincipalName,'admin_'))) and (startsWith(displayName,'AZ_'))"
+    }
+
+    It 'throws on an operator it cannot translate' {
+        { InModuleScope EntraVacuum { Convert-PolicyFilterToGraphFilter -PolicyFilter 'user.department -contains "Eng"' } } | Should -Throw
+        { InModuleScope EntraVacuum { Convert-PolicyFilterToGraphFilter -PolicyFilter 'user.mail -notMatch "@(a|b)\.com"' } } | Should -Throw
+    }
 }

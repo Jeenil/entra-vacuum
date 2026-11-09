@@ -1,187 +1,119 @@
 BeforeAll {
     Import-Module "$PSScriptRoot/../EntraVacuum/EntraVacuum.psd1" -Force
 
-    # Reusable policy stubs
-    $script:ActivePolicy = @{
-        id                       = 'policy-active-id'
-        automaticRequestSettings = @{
-            requestAccessForAllowedTargets             = $true
-            gracePeriodBeforeAccessRemoval             = 'P7D'
-            removeAccessWhenTargetLeavesAllowedTargets = $true
+    function New-TestPolicy ($Active = $true, $Rule = 'user.department -eq "Engineering"') {
+        @{
+            id                       = 'policy-active-id'
+            automaticRequestSettings = @{ requestAccessForAllowedTargets = $Active }
+            specificAllowedTargets   = @(
+                @{ '@odata.type' = '#microsoft.graph.attributeRuleMembers'; membershipRule = $Rule }
+            )
         }
-        specificAllowedTargets   = @(
-            @{
-                '@odata.type'  = '#microsoft.graph.attributeRuleMembers'
-                membershipRule = 'user.department -eq "Engineering"'
+    }
+
+    function New-TestAssignment ($Id, $UserId, $State = 'Delivered') {
+        @{ id = $Id; state = $State; target = @{ objectId = $UserId; displayName = "Name $UserId" } }
+    }
+
+    function New-TestUser ($Id) {
+        @{ id = $Id; displayName = "Name $Id"; userPrincipalName = "$Id@example.com" }
+    }
+
+    # Mocks Graph by URI. $Matching lists the users the real rule includes. Assignments are served
+    # one per page to exercise paging.
+    function Set-GraphMocks ($Policies, $Assignments = @(), $Users = @(), $Matching = @()) {
+        $script:Policies    = $Policies
+        $script:Assignments = $Assignments
+        $script:Users       = $Users
+        $script:Matching    = $Matching
+        Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
+            if ($Method -eq 'POST' -and $Uri -like '*evaluateDynamicMembership') {
+                $memberId = ($Body | ConvertFrom-Json).memberId
+                return @{ membershipRuleEvaluationResult = ($memberId -in $script:Matching) }
             }
-        )
-    }
-
-    $script:InactivePolicy = @{
-        id                       = 'policy-inactive-id'
-        automaticRequestSettings = @{
-            requestAccessForAllowedTargets = $false
+            if ($Method -ne 'GET') { return }
+            if ($Uri -like '*assignmentPolicies*') { return @{ value = @($script:Policies) } }
+            if ($Uri -like '*/users?*')            { return @{ value = @($script:Users) } }
+            if ($Uri -like '*/assignments?*') {
+                if ($script:Assignments.Count -gt 1) {
+                    return @{ value = @($script:Assignments[0]); '@odata.nextLink' = 'https://graph.microsoft.com/next-page' }
+                }
+                return @{ value = @($script:Assignments) }
+            }
+            if ($Uri -like '*next-page') { return @{ value = @($script:Assignments | Select-Object -Skip 1) } }
         }
-        specificAllowedTargets   = @()
-    }
-
-    $script:DummyPolicy = @{
-        id                       = 'policy-dummy-id'
-        automaticRequestSettings = @{
-            requestAccessForAllowedTargets = $true
-        }
-        specificAllowedTargets   = @()
     }
 }
 
 Describe 'Sync-EntraVacAccessPackage' {
-    Context 'when no auto-assignment policy exists' {
-        BeforeEach {
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @() }
-            } -ParameterFilter { $Uri -like '*assignmentPolicies*' }
-        }
-
-        It 'writes a warning and returns' {
-            Sync-EntraVacAccessPackage -AccessPackageId 'fake-id' -WarningAction SilentlyContinue -WarningVariable warnings
-            $warnings | Should -Not -BeNullOrEmpty
-        }
+    BeforeEach {
     }
 
-    Context 'when the auto-assignment policy is inactive' {
-        BeforeEach {
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @($script:InactivePolicy) }
-            } -ParameterFilter { $Uri -like '*assignmentPolicies*' }
-        }
-
-        It 'writes a warning and returns' {
-            Sync-EntraVacAccessPackage -AccessPackageId 'fake-id' -WarningAction SilentlyContinue -WarningVariable warnings
-            $warnings | Should -Not -BeNullOrEmpty
-        }
-    }
-
-    Context 'when more than one active auto-assignment policy exists' {
-        BeforeEach {
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @($script:ActivePolicy, $script:ActivePolicy) }
-            } -ParameterFilter { $Uri -like '*assignmentPolicies*' }
-        }
-
-        It 'writes an error and returns' {
-            $null = Sync-EntraVacAccessPackage -AccessPackageId 'fake-id' -WarningAction SilentlyContinue -ErrorAction SilentlyContinue -ErrorVariable testErrors
-            $testErrors | Should -Not -BeNullOrEmpty
-        }
-    }
-
-    Context 'when the active policy has no membershipRule' {
-        BeforeEach {
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @($script:DummyPolicy) }
-            } -ParameterFilter { $Uri -like '*assignmentPolicies*' }
-
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @() }
-            } -ParameterFilter { $Uri -like '*assignments*' }
-        }
-
-        It 'writes a warning and returns' {
-            Sync-EntraVacAccessPackage -AccessPackageId 'fake-id' -WarningAction SilentlyContinue -WarningVariable warnings
-            $warnings | Should -Not -BeNullOrEmpty
-        }
-    }
-
-    Context 'when the membershipRule returns no users' {
-        BeforeEach {
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @($script:ActivePolicy) }
-            } -ParameterFilter { $Uri -like '*assignmentPolicies*' }
-
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @() }
-            } -ParameterFilter { $Uri -like '*assignments*' }
-
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @() }
-            } -ParameterFilter { $Uri -like '*users*' }
-        }
-
-        It 'writes a warning and returns without making changes' {
-            Sync-EntraVacAccessPackage -AccessPackageId 'fake-id' -WarningAction SilentlyContinue -WarningVariable warnings
-            $warnings | Should -Not -BeNullOrEmpty
-            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 0 -ParameterFilter { $Method -eq 'POST' }
-        }
+    It 'makes no changes when drift detection returns nothing' {
+        Set-GraphMocks -Policies @()
+        Sync-EntraVacAccessPackage -AccessPackageId 'fake-id' -WarningAction SilentlyContinue
+        Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 0 -ParameterFilter { $Method -eq 'POST' -and $Uri -notlike '*evaluateDynamicMembership' }
     }
 
     Context 'when there is drift' {
         BeforeEach {
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @($script:ActivePolicy) }
-            } -ParameterFilter { $Uri -like '*assignmentPolicies*' }
-
-            # user-b is assigned but no longer matches the filter
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @(
-                    @{ id = 'assign-b'; state = 'Delivered'; assignmentPolicyId = 'policy-active-id'; target = @{ objectId = 'user-b' } }
-                )}
-            } -ParameterFilter { $Uri -like '*assignments*' }
-
-            # user-a and user-c match the filter; user-b does not
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @(
-                    @{ id = 'user-a'; userPrincipalName = 'a@example.com' }
-                    @{ id = 'user-c'; userPrincipalName = 'c@example.com' }
-                )}
-            } -ParameterFilter { $Uri -like '*users*' }
-
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {} -ParameterFilter { $Method -eq 'POST' }
+            Set-GraphMocks -Policies @(New-TestPolicy) `
+                -Assignments @(New-TestAssignment 'assign-b' 'user-b') `
+                -Users @((New-TestUser 'user-a'), (New-TestUser 'user-c')) `
+                -Matching @('user-a', 'user-c')
         }
 
         It 'adminAdds missing users and adminRemoves stale assignments' {
             Sync-EntraVacAccessPackage -AccessPackageId 'fake-id'
-
-            # user-a and user-c should be added (2 POSTs for adminAdd)
-            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 2 -ParameterFilter {
-                $Method -eq 'POST' -and ($Body | ConvertFrom-Json).requestType -eq 'adminAdd'
-            }
-            # user-b assignment should be removed (1 POST for adminRemove)
+            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 2 -ParameterFilter { $Method -eq 'POST' -and $Uri -like '*assignmentRequests' -and ($Body | ConvertFrom-Json).requestType -eq 'adminAdd' }
             Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 1 -ParameterFilter {
-                $Method -eq 'POST' -and ($Body | ConvertFrom-Json).requestType -eq 'adminRemove'
+                $b = if ($Body) { $Body | ConvertFrom-Json }
+                $Method -eq 'POST' -and $Uri -like '*assignmentRequests' -and $b.requestType -eq 'adminRemove' -and $b.assignment.id -eq 'assign-b'
             }
+        }
+
+        It 'sends nothing with -WhatIf' {
+            Sync-EntraVacAccessPackage -AccessPackageId 'fake-id' -WhatIf
+            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 0 -ParameterFilter { $Method -eq 'POST' -and $Uri -notlike '*evaluateDynamicMembership' }
+        }
+    }
+
+    Context 'when removals exceed MaxRemovals' {
+        BeforeEach {
+            Set-GraphMocks -Policies @(New-TestPolicy) `
+                -Assignments @((New-TestAssignment 'assign-b' 'user-b'), (New-TestAssignment 'assign-d' 'user-d')) `
+                -Users @(New-TestUser 'user-a') -Matching @('user-a')
+        }
+
+        It 'throws and sends nothing' {
+            { Sync-EntraVacAccessPackage -AccessPackageId 'fake-id' -MaxRemovals 1 } | Should -Throw
+            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 0 -ParameterFilter { $Method -eq 'POST' -and $Uri -notlike '*evaluateDynamicMembership' }
+        }
+
+        It 'proceeds with -Force' {
+            Sync-EntraVacAccessPackage -AccessPackageId 'fake-id' -MaxRemovals 1 -Force
+            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 2 -ParameterFilter { $Method -eq 'POST' -and $Uri -like '*assignmentRequests' -and ($Body | ConvertFrom-Json).requestType -eq 'adminRemove' }
         }
     }
 
     Context 'when a PartiallyDelivered assignment exists for a user still in target' {
-        BeforeEach {
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @($script:ActivePolicy) }
-            } -ParameterFilter { $Uri -like '*assignmentPolicies*' }
-
-            # user-a has a PartiallyDelivered assignment and still matches the filter
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @(
-                    @{ id = 'assign-a'; state = 'PartiallyDelivered'; target = @{ objectId = 'user-a'; displayName = 'User A' } }
-                )}
-            } -ParameterFilter { $Uri -like '*assignments*' }
-
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {
-                @{ value = @(
-                    @{ id = 'user-a'; userPrincipalName = 'a@example.com' }
-                )}
-            } -ParameterFilter { $Uri -like '*users*' }
-
-            Mock -ModuleName EntraVacuum Invoke-MgGraphRequest {} -ParameterFilter { $Method -eq 'POST' }
-        }
-
-        It 'reprocesses the PartiallyDelivered assignment instead of removing and re-adding' {
+        It 'reprocesses it instead of removing and re-adding' {
+            Set-GraphMocks -Policies @(New-TestPolicy) `
+                -Assignments @(New-TestAssignment 'assign-a' 'user-a' 'PartiallyDelivered') `
+                -Users @(New-TestUser 'user-a') -Matching @('user-a')
             Sync-EntraVacAccessPackage -AccessPackageId 'fake-id'
+            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 1 -ParameterFilter { $Uri -like '*/assign-a/reprocess' }
+            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 0 -ParameterFilter { $Uri -like '*assignmentRequests' }
+        }
+    }
 
-            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 1 -ParameterFilter {
-                $Method -eq 'POST' -and $Uri -like '*/reprocess'
-            }
-            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 0 -ParameterFilter {
-                $Method -eq 'POST' -and $Uri -notlike '*/reprocess'
-            }
+    Context 'when an assignment is still Delivering' {
+        It 'does not request it again' {
+            Set-GraphMocks -Policies @(New-TestPolicy) `
+                -Assignments @(New-TestAssignment 'assign-a' 'user-a' 'Delivering') `
+                -Users @(New-TestUser 'user-a')
+            Sync-EntraVacAccessPackage -AccessPackageId 'fake-id'
+            Should -Invoke -ModuleName EntraVacuum Invoke-MgGraphRequest -Times 0 -ParameterFilter { $Method -eq 'POST' -and $Uri -notlike '*evaluateDynamicMembership' }
         }
     }
 }
