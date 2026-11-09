@@ -8,30 +8,32 @@
     "**/*.md",
     "**/*.yml",
     "**/*.json",
-    "**/*.jsonc",
+    "**/*.jsonc"
   ],
   "useGitignore": true,
   "ignorePaths": [
     ".git/**",
-    "LICENSE",
+    "LICENSE"
   ],
   "words": [
     "adminAdd",
-    "Entra",
     "adminRemove",
+    "ConsistencyLevel",
+    "Entra",
     "EntraVac",
     "EntraVacuum",
+    "extensionAttribute",
+    "Intune",
     "Jeenil",
     "nextLink",
+    "normalised",
     "odata",
+    "onPremisesExtensionAttributes",
     "PSGallery",
     "PSGALLERY",
     "PSSA",
-    "ConsistencyLevel",
-    "extensionAttribute",
-    "onPremisesExtensionAttributes",
     "requestorFilter",
     "ShouldProcess",
-    "specificAllowedTargets",
-  ],
+    "specificAllowedTargets"
+  ]
 }
